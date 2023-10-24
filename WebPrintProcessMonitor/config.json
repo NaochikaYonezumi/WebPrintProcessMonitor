@@ -1,0 +1,53 @@
+{
+    "smtpServer": "smtp.gmail.com",
+    "smtpUser": "******@******",
+    "smtpPass": "******",
+    "from": "******@******",
+    "to": [
+        "******@******",
+        "******@******"
+    ],
+    "subject": {
+        "processStopTrue": "WARN: ServerName: {0} ProcessName: {1} ID: {2} has been running for over {3} minutes.",
+        "processStopFalse": "WARN: ServerName: {0} ProcessName: {1} ID: {2} has been running for over {3} minutes.",
+        "processStopSuccess" : "SUCCESS: ServerName: {0} ProcessName: {1} ID: {2} is Stopped.",
+        "rebootTrue": "ERROR: Failed to stop the process. Restart Server: {0} ProcessName: {1} ProcessID: {2} Retry count: {3}",
+        "rebootFalse": "ERROR: Failed to stop the process.The server will not reboot because the server restart setting is set to false.Server: {0} ProcessName: {1} ProcessID: {2} Retry count: {3}"
+	
+    },
+    "body": {
+        "processStopTrue": "ServerName:{0}\r\nProcessName:{1}\r\nProcessID:{2}\r\nhas been running for over {3} minutes.\r\nProcess is being stopped...",
+        "processStopFalse": "ServerName:{0}\r\nProcessName:{1}\r\nProcessID:{2}\r\nhas been running for over {3} minutes.",
+        "processStopSuccess" : "ServerName:{0}\r\nProcessName:{1}\r\nProcessID:{2}\r\nThe process was terminated successfully.",
+        "rebootTrue": "ServerName:{0}\r\nProcessName:{1}\r\nProcessID:{2}\r\nRetry count:{3}\r\nFailed to stop the process.\r\nRestart Server.",
+        "rebootFalse": "ServerName:{0}\r\nProcessName:{1}\r\nProcessID:{2}\r\nRetry count:{3}\r\nFailed to stop the process."
+    },
+    "log":{
+        "info": "ProcessName: {0} ProcessID: {1} has been running for about {2} minutes.",
+        "processtimeOver": "ProcessName:{0} ID:{1} has been running for over {2} minutes.",
+        "processStopTrue": "ProcessName:{0} ID:{1} has been running for over {2} minutes.Process is being stopped...",
+        "processStopFalse": "ProcessName:{0} ID:{1} has been running for over {2} minutes.",
+        "processStopRetry": "ProcessName:{0} ID:{1} Retry count:{2}/{3} Failed to stop the process... Retrying. ", 
+        "processStopSuccess" : "ProcessName:{0} ID:{1} The process was terminated successfully.",
+        "rebootTrue": "ProcessName:{0} ProcessID:{1} Retry count:{2} Failed to stop the process. Restart Server.",
+        "rebootFalse": "ProcessName:{0} ProcessID:{1} Retry count:{2}Failed to stop the process."
+    },
+    "runningTimeThreshold": 1,
+    "retryInterval": 10,
+    "retryLimit": 6,
+    "stopProcess": "True",
+    "restartServer": "True",
+    "logSettings": {
+        "logFileBaseName": "log",
+        "logFileExtension": ".txt",
+        "logFileMaxSize": "10MB",
+        "logGenerations": 10
+    },
+    "processNames": [
+        "AcroRd32",
+        "Acrobat",
+        "WINWORD",
+        "EXCEL",
+        "POWERPNT"
+    ]
+}
