@@ -44,31 +44,29 @@ if ((Get-Item -Path $logFile).Length -gt $logFileMaxSizeBytes) {
     }
 }
 
-#メールを送信するための関数
+# メールを送信するための関数
 function Send-Mail($subject, $body) {
     $smtpServer = $config.smtpServer
-    $smtpUser = $config.smtpUser
-    $smtpPass = $config.smtpPass
-    $from = $config.from
-
+    $smtpPort = $config.smtpPort
     $message = New-Object System.Net.Mail.MailMessage
-    $message.From = $from
+    $message.From = $config.from
     $message.Subject = $subject
     $message.Body = $body
 
-    #メールをShift-jisにエンコーディング
-    $shiftJISEncoding = [System.Text.Encoding]::GetEncoding("shift_jis")
-    $message.BodyEncoding = $shiftJISEncoding
-    $message.SubjectEncoding = $shiftJISEncoding
-
-    foreach ($recipient in $config.to) {
+    foreach ($recipient in $config.recipients) {
         $message.To.Add($recipient)
     }
 
-    $smtp = New-Object Net.Mail.SmtpClient($smtpServer, 587)
-    $smtp.EnableSsl = $true
-    $smtp.Credentials = New-Object System.Net.NetworkCredential($smtpUser, $smtpPass)
-    $smtp.Send($message)
+    # SMTP クライアントオブジェクトの作成
+    $smtpClient = New-Object System.Net.Mail.SmtpClient($smtpServer, $smtpPort)
+
+    # メール送信
+    try {
+        $smtpClient.Send($message)
+        Write-Log -level "INFO" -message "The email has been successfully sent."
+    } catch {
+        Write-Log -level "ERROR" -message "The email could not be sent."
+    }
 }
 
 #プロセス名からプロセスの取得
@@ -96,7 +94,7 @@ foreach ($proc in $allProcesses) {
             #メールの送信
             Send-Mail $subjectMessage $bodyMessage
             #プロセスの停止
-            #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         } else {
             $bodyMessage = $bodyMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
             $subjectMessage = $subjectMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
@@ -123,7 +121,7 @@ foreach ($proc in $allProcesses) {
             $retryCount++
 
             # プロセス停止（再試行)
-            #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
 
         if ($retryCount -gt $retryLimit) {
