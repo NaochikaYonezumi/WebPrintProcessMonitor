@@ -104,7 +104,7 @@ foreach ($proc in $allProcesses) {
             # メールの送信
             Send-Mail -subject $subjectMessage -body $bodyMessage
             # プロセスの停止
-            #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         } else {
             $bodyMessage = $bodyMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
             $subjectMessage = $subjectMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
@@ -126,7 +126,7 @@ foreach ($proc in $allProcesses) {
             $retryCount++
 
             # プロセス停止（再試行）
-            #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
 
         if ($retryCount -gt $retryLimit) {
