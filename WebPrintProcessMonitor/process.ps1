@@ -2,15 +2,20 @@
 $config = Get-Content -Path "$($PSScriptRoot)\config.json" | ConvertFrom-Json
 $serverName = hostname
 $logSettings = $config.logSettings
-$subjectMessages = $config.subject
-$bodyMessages = $config.body
-$logMessages = $config.log
-$stopProcess = $config.stopProcess
-$restartServer = $config.restartServer
-$LogDir = Join-Path $PSScriptRoot 'logs' # ログフォルダのパスを定義
-$LogFileName = $logSettings.logFileBaseName + $logSettings.logFileExtension
-$LogFilePath = Join-Path $LogDir $LogFileName 
+$logDir = Join-Path $PSScriptRoot 'logs'
+$logFilePath = Join-Path $logDir ($logSettings.logFileBaseName + $logSettings.logFileExtension)
 $logGenerations = $logSettings.logGenerations
+$statusDir = Join-Path $PSScriptRoot 'Status'
+
+# フォルダが存在しない場合は作成する関数
+function Ensure-FolderExists {
+    param (
+        [string]$path
+    )
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Path $path
+    }
+}
 
 # ログを記録する関数
 function Write-Log {
@@ -18,33 +23,27 @@ function Write-Log {
         [string]$level,
         [string]$message
     )
-    # タイムスタンプの取得
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    
-    # ログメッセージの作成
     $logMessage = "$timestamp - $level - $message"
-    
-    # ログファイルにメッセージを書き込む
-    Add-Content -Path $LogFilePath -Value $logMessage
+    Add-Content -Path $logFilePath -Value $logMessage
+    Manage-LogFiles
+}
 
-    # ログファイルサイズと世代の管理
-    if ((Get-Item $LogFilePath).Length -gt $logSettings.logFileMaxSize) {
+# ログファイルの管理関数
+function Manage-LogFiles {
+    if ((Get-Item $logFilePath).Length -gt $logSettings.logFileMaxSize) {
         for ($i = $logGenerations; $i -ge 0; $i--) {
-            $old = "$LogDir\log$i.txt"
+            $old = "$logDir\log$i.txt"
             if (Test-Path $old) {
                 if ($i -eq $logGenerations) {
-                    # 最古のログファイルを削除
                     Remove-Item -Path $old -ErrorAction SilentlyContinue
                 } else {
-                    # 古いログファイルの名前を変更
-                    $new = "$LogDir\log$($i + 1).txt"
-                    Rename-Item -Path $old -NewName $new -ErrorAction SilentlyContinue
+                    Rename-Item -Path $old -NewName "$logDir\log$($i + 1).txt" -ErrorAction SilentlyContinue
                 }
             }
         }
-        # 現在のログファイルを新しい世代としてリネームし、新しいログファイルを作成
-        Rename-Item -Path $LogFilePath -NewName "$LogDir\log0.txt" -ErrorAction SilentlyContinue
-        New-Item -Path $LogFilePath -ItemType File -Force -ErrorAction SilentlyContinue
+        Rename-Item -Path $logFilePath -NewName "$logDir\log0.txt" -ErrorAction SilentlyContinue
+        New-Item -Path $logFilePath -ItemType File -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -60,13 +59,10 @@ function Send-Mail {
     $smtpPassword = $config.smtpPassword
     $fromAddress = $config.from
     $toAddresses = [string]::Join(',', $config.recipients)
-        
-    # 相対パスでPythonスクリプトを指定
     $scriptPath = $PSScriptRoot
     $pythonScriptPath = Join-Path -Path $scriptPath -ChildPath "sendemail.exe"
 
     try {
-        # Pythonスクリプトを呼び出し
         $result = & $pythonScriptPath $smtpServer $smtpPort $fromAddress $toAddresses $subject $body
         Write-Output $result
         if ($result -like "*successfully sent*") {
@@ -79,99 +75,220 @@ function Send-Mail {
     }
 }
 
-# main
-
-# ログフォルダがない場合は作成
-if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir }
-
-# プロセス名からプロセスの取得
-$allProcesses = @()
-foreach ($processName in $config.processNames) {
-    $processes = Get-Process -Name $processName -ErrorAction SilentlyContinue
-    $allProcesses += $processes
+# ステータスを確認するための関数
+function CheckStatus {
+    param (
+        [System.Diagnostics.Process]$proc
+    )
+    $statusFileName = "$($proc.Id).status"
+    $statusFilePath = Join-Path $statusDir $statusFileName
+    $previousStatus = if (Test-Path $statusFilePath) { Get-Content $statusFilePath } else { $null }
+    $data = [PSCustomObject]@{
+        serverName   = $serverName
+        Name     = $proc.Name
+        Id       = $proc.Id
+        runningTime  = $runningTime
+    }
+    $data | Export-Csv -Path $statusFilePath -NoTypeInformation
+    return $previousStatus
 }
 
-# プロセスの取得
-foreach ($proc in $allProcesses) {
-    $runningTime = ((Get-Date) - $proc.StartTime).TotalMinutes
-
-    if ($runningTime -ge $config.runningTimeThreshold) {
-        Write-Log -level "ERROR" -message ($logMessages.processtimeOver -f $proc.Name, $proc.Id, $runningTime)
-        if ($stopProcess -eq "True") {
-            $bodyMessage = $bodyMessages.processStopTrue -f $serverName, $proc.Name, $proc.Id, $runningTime
-            $subjectMessage = $subjectMessages.processStopTrue -f $serverName, $proc.Name, $proc.Id, $runningTime
-            Write-Log -level "INFO" -message ($logMessages.processStopTrue -f $proc.Name, $proc.Id, $runningTime)
-            # メールの送信
-            Send-Mail -subject $subjectMessage -body $bodyMessage
-            # プロセスの停止
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        } else {
-            $bodyMessage = $bodyMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
-            $subjectMessage = $subjectMessages.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
-            Write-Log -level "INFO" -message ($logMessages.processStopFalse -f $proc.Name, $proc.Id, $runningTime)
-            # メールの送信
-            Send-Mail -subject $subjectMessage -body $bodyMessage
-            exit
-        }
-        $retryCount = 1
-        $retryLimit = $config.retryLimit  # 再試行限界回数
-        $retryInterval = $config.retryInterval  # 再試行間隔
-
-        while (($stoppedProcess = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) -and ($retryCount -le $retryLimit)) {
-            Write-Log -level "INFO" -message ($logMessages.processStopRetry -f $proc.Name, $proc.Id, $retryCount, $retryLimit)
-            Write-Output $logMessages.processStopRetry -f $proc.Name, $proc.Id, $retryCount, $retryLimit
-            Start-Sleep -Seconds $retryInterval
-
-            # インクリメント
-            $retryCount++
-
-            # プロセス停止（再試行）
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        }
-
-        if ($retryCount -gt $retryLimit) {
-            if ($restartServer -eq "True") {
-                Write-Output "Failed to stop the process. ProcessName: $($proc.Name) ProcessID: $($proc.Id) Retry count: $retryLimit"
-                $subjectMessage = $subjectMessages.rebootTrue -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                $windowslogMessage = $bodyMessages.rebootTrue -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                Write-Log -level "ERROR" -message ($logMessages.rebootTrue -f $serverName, $proc.Name, $proc.Id, $retryLimit)
-
-                # メールの送信
-                Send-Mail -subject $subjectMessage -body $windowslogMessage
-
-                #アプリを停止する。
-                try {
-                    Write-Log -level "INFO" -message "Attempting to stop process: pc-web-print"
-                    $pcweb = Get-Process -Name pc-web-print -ErrorAction SilentlyContinue
-                    Write-Log -level "INFO" -message "pc-web: $pcweb"
-                    Stop-Process -Name pc-web-print -Force -ErrorAction SilentlyContinue
-                    Write-Log -level "INFO" -message "Process pc-web-print stopped successfully."
-                } catch {
-                    Write-Log -level "ERROR" -message "Failed to stop process pc-web-print. Error: $_"
-                }
-                
-                # 30秒待機
-                Start-Sleep -Seconds 30
-                
-                Start-Process PowerShell -ArgumentList "Restart-Computer -Force" -Verb RunAs
-            } else {
-                $subjectMessage = $subjectMessages.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                $windowslogMessage = $bodyMessages.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                Write-Log -level "ERROR" -message ($logMessages.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit)
-
-                # メールの送信
-                Send-Mail -subject $subjectMessage -body $windowslogMessage
-                exit
+# ステータスファイルをクリーンアップする関数
+function Cleanup-StatusFiles {
+    $allProcessIds = $allProcesses.Id
+    Get-ChildItem -Path $statusDir -File | ForEach-Object {
+        $fileName = $_.Name
+        if ($fileName -match '^(\d+)\.status$') {
+            $fileProcessId = [int]$matches[1]
+            if (-not ($allProcessIds -contains $fileProcessId)) {
+                $Proc = Import-Csv -Path $_.FullName
+                Remove-Item $_.FullName -Force
+                Write-Log -level "INFO" -message ($config.log.processStopSuccess -f $proc.Name, $proc.Id)
+                $subject = $config.subject.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+                $body = $config.body.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+                Send-Mail -subject $subject -body $body
+                Write-Log -level "INFO" -message "Remove status file: $fileName"
             }
-        } else {
-            # プロセスが正常に停止した場合
-            Write-Log -level "INFO" -message ($logMessages.processStopSuccess -f $proc.Name, $proc.Id)
-            $subject = $subjectMessages.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
-            $body = $bodyMessages.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
-            # メールを送信
-            Send-Mail -subject $subject -body $body
         }
-    } else {
-        Write-Log -level "INFO" -message ($logMessages.info -f $proc.Name, $proc.Id, $runningTime)
     }
 }
+
+# タスク自動終了時、ステータスファイルをクリーンアップする関数
+function Cleanup-StatusFilesAfterProcessStopSuccess {
+    param (
+        [System.Diagnostics.Process]$proc
+            )
+    Get-ChildItem -Path $statusDir -File | ForEach-Object {
+        $fileName = $_.Name
+        if ($fileName -match '^(\d+)\.status$') {
+            $fileProcessId = [int]$matches[1]
+            if ($proc.Id -eq $fileProcessId){
+                Remove-Item $_.FullName -Force
+                Write-Log -level "INFO" -message "Remove status file: $fileName"
+            }
+        }
+    }
+}
+
+# プロセスを取得する関数
+function Get-AllProcesses {
+    $allProcesses = @()
+    foreach ($processName in $config.processNames) {
+        $processes = Get-Process -Name $processName -ErrorAction SilentlyContinue
+        $allProcesses += $processes
+    }
+    return $allProcesses
+}
+
+# プロセスが設定時間を超えた場合の処理を行う関数
+function Handle-ProcessOverTime {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [double]$runningTime
+    )
+    Write-Log -level "ERROR" -message ($config.log.processtimeOver -f $proc.Name, $proc.Id, $runningTime)
+    if ($config.stopProcess -eq "True") {
+        Stop-ProcessAction -proc $proc -runningTime $runningTime
+    } else {
+        $previousStatus = CheckStatus -proc $proc -runningTime $runningTime
+        if ($previousStatus -eq $null) {
+            Send-ProcessStopFalseMail -proc $proc -runningTime $runningTime
+        }
+    }
+}
+
+# プロセス停止処理を行う関数
+function Stop-ProcessAction {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [double]$runningTime
+    )
+    $bodyMessage = $config.body.processStopTrue -f $serverName, $proc.Name, $proc.Id, $runningTime
+    $subjectMessage = $config.subject.processStopTrue -f $serverName, $proc.Name, $proc.Id, $runningTime
+    Write-Log -level "INFO" -message ($config.log.processStopTrue -f $proc.Name, $proc.Id, $runningTime)
+    $previousStatus = CheckStatus -proc $proc
+    if ($previousStatus -eq $null) {
+                Send-Mail -subject $subjectMessage -body $bodyMessage
+    }
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Retry-StopProcess -proc $proc
+}
+
+# プロセス停止再試行処理を行う関数
+function Retry-StopProcess {
+    param (
+        [System.Diagnostics.Process]$proc
+    )
+    $retryCount = 1
+    $retryLimit = $config.retryLimit
+    $retryInterval = $config.retryInterval
+
+    while (($stoppedProcess = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue) -and ($retryCount -le $retryLimit)) {
+        Write-Log -level "INFO" -message ($config.log.processStopRetry -f $proc.Name, $proc.Id, $retryCount, $retryLimit)
+        Start-Sleep -Seconds $retryInterval
+        $retryCount++
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($retryCount -gt $retryLimit) {
+        if ($config.restartServer -eq "True") {
+            Handle-RestartServer -proc $proc -retryLimit $retryLimit
+        } else {
+            $previousStatus = CheckStatus -proc $proc
+            if ($previousStatus -eq $null) {
+                Send-RebootFalseMail -proc $proc -retryLimit $retryLimit
+            }
+        }
+    } else {
+        Handle-ProcessStopSuccess -proc $proc -retryLimit $retryLimit
+    }
+}
+
+# プロセス停止成功時のメール送信を行う関数
+function Handle-ProcessStopSuccess {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [int]$retryLimit
+    )
+    Write-Log -level "INFO" -message ($config.log.processStopSuccess -f $proc.Name, $proc.Id)
+    $subject = $config.subject.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    $body = $config.body.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    Send-Mail -subject $subject -body $body
+    Cleanup-StatusFilesAfterProcessStopSuccess $proc
+}
+
+# プロセス停止失敗時のメール送信を行う関数
+function Send-ProcessStopFalseMail {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [double]$runningTime
+    )
+    $bodyMessage = $config.body.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
+    $subjectMessage = $config.subject.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
+    Write-Log -level "INFO" -message ($config.log.processStopFalse -f $proc.Name, $proc.Id, $runningTime)
+    Send-Mail -subject $subjectMessage -body $bodyMessage
+}
+
+# サーバ再起動処理を行う関数
+function Handle-RestartServer {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [int]$retryLimit
+    )
+    Write-Output "Failed to stop the process. ProcessName: $($proc.Name) ProcessID: $($proc.Id) Retry count: $retryLimit"
+    $subjectMessage = $config.subject.rebootTrue -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    $windowslogMessage = $config.body.rebootTrue -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    Write-Log -level "ERROR" -message ($config.log.rebootTrue -f $proc.Name, $proc.Id, $retryLimit)
+    Send-Mail -subject $subjectMessage -body $windowslogMessage
+    Try-StopPcWebPrint
+    Start-Sleep -Seconds 30
+    Start-Process PowerShell -ArgumentList "Restart-Computer -Force" -Verb RunAs
+}
+
+# pc-web-printプロセス停止を試みる関数
+function Try-StopPcWebPrint {
+    try {
+        Write-Log -level "INFO" -message "Attempting to stop process: pc-web-print"
+        $pcweb = Get-Process -Name pc-web-print -ErrorAction SilentlyContinue
+        Write-Log -level "INFO" -message "pc-web: $pcweb"
+        Stop-Process -Name pc-web-print -Force -ErrorAction SilentlyContinue
+        Write-Log -level "INFO" -message "Process pc-web-print stopped successfully."
+    } catch {
+        Write-Log -level "ERROR" -message "Failed to stop process pc-web-print. Error: $_"
+    }
+}
+
+# サーバ再起動設定をしていない時のメール送信を行う関数
+function Send-RebootFalseMail {
+    param (
+        [System.Diagnostics.Process]$proc,
+        [int]$retryLimit
+    )
+    $subjectMessage = $config.subject.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    $windowslogMessage = $config.body.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
+    Write-Log -level "ERROR" -message ($config.log.rebootFalse -f $proc.Name, $proc.Id, $retryLimit)
+    Send-Mail -subject $subjectMessage -body $windowslogMessage
+}
+
+# メイン処理
+function Main {
+    Ensure-FolderExists -path $logDir
+    Ensure-FolderExists -path $statusDir
+
+    $allProcesses = Get-AllProcesses
+    Cleanup-StatusFiles
+
+    
+    foreach ($proc in $allProcesses) {
+        $runningTime = ((Get-Date) - $proc.StartTime).TotalMinutes
+
+        if ($runningTime -ge $config.runningTimeThreshold) {
+            Handle-ProcessOverTime -proc $proc -runningTime $runningTime
+        } else {
+            Write-Log -level "INFO" -message ($config.log.info -f $proc.Name, $proc.Id, $runningTime)
+        }
+    }
+}
+
+# メイン処理の実行
+Main
