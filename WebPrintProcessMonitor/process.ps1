@@ -25,6 +25,7 @@ function Write-Log {
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "$timestamp - $level - $message"
+    Write-Output $logMessage
     Add-Content -Path $logFilePath -Value $logMessage
     Manage-LogFiles
 }
@@ -87,9 +88,8 @@ function CheckStatus {
         serverName   = $serverName
         Name     = $proc.Name
         Id       = $proc.Id
-        runningTime  = $runningTime
     }
-    $data | Export-Csv -Path $statusFilePath -NoTypeInformation
+    $data | Export-Csv -Path $statusFilePath -Encoding UTF8 -NoTypeInformation
     return $previousStatus
 }
 
@@ -98,15 +98,17 @@ function Cleanup-StatusFiles {
     $allProcessIds = $allProcesses.Id
     Get-ChildItem -Path $statusDir -File | ForEach-Object {
         $fileName = $_.Name
-        if ($fileName -match '^(\d+)\.status$') {
+        if ($fileName -match '^(\d+)\.status$' -or $fileName -match '^(\d+)_2.status$') {
             $fileProcessId = [int]$matches[1]
             if (-not ($allProcessIds -contains $fileProcessId)) {
                 $Proc = Import-Csv -Path $_.FullName
                 Remove-Item $_.FullName -Force
-                Write-Log -level "INFO" -message ($config.log.processStopSuccess -f $proc.Name, $proc.Id)
-                $subject = $config.subject.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                $body = $config.body.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
-                Send-Mail -subject $subject -body $body
+                if ($fileName -notmatch '^(\d+)_2.status$') {
+                    Write-Log -level "INFO" -message ($config.log.processStopSuccess -f $proc.Name, $proc.Id)
+                    $subject = $config.subject.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+                    $body = $config.body.processStopSuccess -f $serverName, $proc.Name, $proc.Id, $retryLimit
+                    Send-Mail -subject $subject -body $body
+                }
                 Write-Log -level "INFO" -message "Remove status file: $fileName"
             }
         }
@@ -120,7 +122,7 @@ function Cleanup-StatusFilesAfterProcessStopSuccess {
             )
     Get-ChildItem -Path $statusDir -File | ForEach-Object {
         $fileName = $_.Name
-        if ($fileName -match '^(\d+)\.status$') {
+        if ($fileName -match '^(\d+)\.status$' -or $fileName -match '^(\d+)_2.status$') {
             $fileProcessId = [int]$matches[1]
             if ($proc.Id -eq $fileProcessId){
                 Remove-Item $_.FullName -Force
@@ -150,7 +152,7 @@ function Handle-ProcessOverTime {
     if ($config.stopProcess -eq "True") {
         Stop-ProcessAction -proc $proc -runningTime $runningTime
     } else {
-        $previousStatus = CheckStatus -proc $proc -runningTime $runningTime
+        $previousStatus = CheckStatus -proc $proc -runningTime
         if ($previousStatus -eq $null) {
             Send-ProcessStopFalseMail -proc $proc -runningTime $runningTime
         }
@@ -170,7 +172,8 @@ function Stop-ProcessAction {
     if ($previousStatus -eq $null) {
                 Send-Mail -subject $subjectMessage -body $bodyMessage
     }
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    $sendMailStatus = CheckMailStatus -proc $proc
+    #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     Retry-StopProcess -proc $proc
 }
 
@@ -187,17 +190,14 @@ function Retry-StopProcess {
         Write-Log -level "INFO" -message ($config.log.processStopRetry -f $proc.Name, $proc.Id, $retryCount, $retryLimit)
         Start-Sleep -Seconds $retryInterval
         $retryCount++
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
 
     if ($retryCount -gt $retryLimit) {
         if ($config.restartServer -eq "True") {
             Handle-RestartServer -proc $proc -retryLimit $retryLimit
         } else {
-            $previousStatus = CheckStatus -proc $proc
-            if ($previousStatus -eq $null) {
-                Send-RebootFalseMail -proc $proc -retryLimit $retryLimit
-            }
+            Send-RebootFalseMail -proc $proc -retryLimit $retryLimit
         }
     } else {
         Handle-ProcessStopSuccess -proc $proc -retryLimit $retryLimit
@@ -225,8 +225,10 @@ function Send-ProcessStopFalseMail {
     )
     $bodyMessage = $config.body.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
     $subjectMessage = $config.subject.processStopFalse -f $serverName, $proc.Name, $proc.Id, $runningTime
+    $previousStatus = if (Test-Path $statusFilePath) { Get-Content $statusFilePath } else { $null }
     Write-Log -level "INFO" -message ($config.log.processStopFalse -f $proc.Name, $proc.Id, $runningTime)
     Send-Mail -subject $subjectMessage -body $bodyMessage
+    
 }
 
 # サーバ再起動処理を行う関数
@@ -264,10 +266,24 @@ function Send-RebootFalseMail {
         [System.Diagnostics.Process]$proc,
         [int]$retryLimit
     )
-    $subjectMessage = $config.subject.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
-    $windowslogMessage = $config.body.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
-    Write-Log -level "ERROR" -message ($config.log.rebootFalse -f $proc.Name, $proc.Id, $retryLimit)
-    Send-Mail -subject $subjectMessage -body $windowslogMessage
+    $statusFileName = "$($proc.Id)_2.status"
+    $statusFilePath = Join-Path $statusDir $statusFileName
+    try{
+    $previousdata = Import-Csv -Path $statusFilePath -Encoding utf8
+    } catch{
+        $subjectMessage = $config.subject.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
+        $windowslogMessage = $config.body.rebootFalse -f $serverName, $proc.Name, $proc.Id, $retryLimit
+        Write-Log -level "ERROR" -message ($config.log.rebootFalse -f $proc.Name, $proc.Id, $retryLimit)
+        Send-Mail -subject $subjectMessage -body $windowslogMessage
+        $data = [PSCustomObject]@{
+            serverName   = $serverName
+            Name     = $proc.Name
+            Id       = $proc.Id
+            runningTime  = $runningTime
+            SendMail = "True"
+        }
+        $data | Export-Csv -Path $statusFilePath -Encoding utf8 -NoTypeInformation
+    }
 }
 
 # メイン処理
@@ -290,5 +306,4 @@ function Main {
     }
 }
 
-# メイン処理の実行
 Main
