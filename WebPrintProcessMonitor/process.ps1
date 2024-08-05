@@ -172,7 +172,6 @@ function Stop-ProcessAction {
     if ($previousStatus -eq $null) {
                 Send-Mail -subject $subjectMessage -body $bodyMessage
     }
-    $sendMailStatus = CheckMailStatus -proc $proc
     #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     Retry-StopProcess -proc $proc
 }
