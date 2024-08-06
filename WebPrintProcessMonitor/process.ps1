@@ -172,7 +172,7 @@ function Stop-ProcessAction {
     if ($previousStatus -eq $null) {
                 Send-Mail -subject $subjectMessage -body $bodyMessage
     }
-    #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     Retry-StopProcess -proc $proc
 }
 
@@ -189,7 +189,7 @@ function Retry-StopProcess {
         Write-Log -level "INFO" -message ($config.log.processStopRetry -f $proc.Name, $proc.Id, $retryCount, $retryLimit)
         Start-Sleep -Seconds $retryInterval
         $retryCount++
-        #Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
 
     if ($retryCount -gt $retryLimit) {
